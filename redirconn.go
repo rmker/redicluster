@@ -9,6 +9,10 @@ import (
 	"github.com/gomodule/redigo/redis"
 )
 
+// redirconn is a struct that implements redis.Conn interface, which supports most of commands for redis cluster,
+// including redirection handling automatically, multikeys command(MSET/MGET) and pipeline. Meanwhile, redirconn also works
+// if you are using stand-alone redis.
+
 type redirconn struct {
 
 	// cp is the pointer to the ClusterPool, immutable
@@ -60,6 +64,19 @@ func ParseRedirInfo(err error) *RedirInfo {
 	}
 }
 
+func (c *redirconn) hookCmd(cmd string, args ...interface{}) (reply interface{}, err error, hooked bool) {
+	switch cmd {
+	case "MSET":
+		rep, err := multiset(c, args...)
+		return rep, err, true
+	case "MGET":
+		rep, err := multiget(c, args...)
+		return rep, err, true
+	default:
+		return nil, nil, false
+	}
+}
+
 // Close closes the connection.
 func (c *redirconn) Close() error {
 	c.mu.Lock()
@@ -82,6 +99,9 @@ func (c *redirconn) Do(cmd string, args ...interface{}) (reply interface{}, err 
 	// conn, err := c.cp.getRedisConn()
 	if conn == nil {
 		return nil, errors.New("invalid conn")
+	}
+	if repl, err1, hooked := c.hookCmd(cmd, args...); hooked {
+		return repl, err1
 	}
 	repl, err1 := conn.Do(cmd, args...)
 	conn.Close()

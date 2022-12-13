@@ -11,7 +11,7 @@ import (
 // You can use it to run a pipeline in a redis cluster(without proxy), just like using a redis.Conn.
 // pipeLiner splits a pipeline into multiple batches according to the keys commands, then runs every batch in goroutines concurrently.
 // Every batch is a real pipeline request to a redis node. All responses will be stored in the cmd.reply once all batches finish their request.
-// If there are MOVED responses, pipeLiner will invoke Cluster.Refresh to refresh the cluster slots mapping, and then handle them in the new
+// If there are MOVED responses, pipeLiner will invoke onRedir to trigger reloading for the cluster slots mapping, and then handle them in the new
 // batches according the addresses for new nodes.
 
 type cmd struct {

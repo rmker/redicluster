@@ -49,3 +49,26 @@ func TestPipeLineSet(t *testing.T) {
 		}
 	}
 }
+
+func TestMultiCmd(t *testing.T) {
+	cp := WithPool()
+	cp.ReloadSlotMapping()
+	conn := cp.Get()
+	var args []interface{}
+	n := 6
+	for i := 0; i < n; i++ {
+		args = append(args, fmt.Sprintf("mkey%d", i+1))
+		args = append(args, fmt.Sprintf("%d", i+1))
+	}
+	rep, err := conn.Do("MSET", args...)
+	assert.NoError(t, err)
+	t.Logf("set result:%#v", rep)
+
+	args = nil
+	for i := 0; i < n; i++ {
+		args = append(args, fmt.Sprintf("mkey%d", i+1))
+	}
+	rep, err = conn.Do("MGET", args...)
+	assert.NoError(t, err)
+	t.Logf("get result:%+v", rep)
+}

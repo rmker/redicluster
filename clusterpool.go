@@ -41,8 +41,8 @@ type ClusterPool struct {
 	reloading   bool
 }
 
-// slot returns the hash slot of the key
-func slot(key string) int {
+// Slot returns the hash Slot of the key
+func Slot(key string) int {
 	if start := strings.Index(key, "{"); start >= 0 {
 		if end := strings.Index(key[start+1:], "}"); end > 0 {
 			end += start + 1
@@ -56,7 +56,7 @@ func slot(key string) int {
 func CmdSlot(cmd string, args ...interface{}) int {
 	if len(args) > 0 {
 		if key, ok := args[0].(string); ok {
-			return slot(key)
+			return Slot(key)
 		}
 	}
 	return 0
