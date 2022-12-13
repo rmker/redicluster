@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -144,8 +145,47 @@ func (cp *ClusterPool) VerbosSlotMapping() string {
 	return strings.Join(s, "\n")
 }
 
-// onRedir triggers the redirecting event
-func (cp *ClusterPool) onRedir(ri *RedirInfo) {
+// ReloadSlots reloads the slot mapping
+func (cp *ClusterPool) ReloadSlotMapping() error {
+	return cp.reloadSlotMaping()
+}
+
+// a *rand.Rand is not safe for concurrent access
+var rnd = struct {
+	sync.Mutex
+	*rand.Rand
+}{Rand: rand.New(rand.NewSource(time.Now().UnixNano()))} //nolint:gosec
+
+func (cp *ClusterPool) GetAddrsBySlots(slots []int, readOnly bool) ([]string, error) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	var addrs []string
+	for _, sl := range slots {
+		if sl >= TotalSlots {
+			return nil, errors.New("invalid slot")
+		}
+		sa := cp.slotAddrMap[sl]
+		if len(sa) == 0 {
+			return nil, errors.New("bad slot mapping")
+		}
+		addr := sa[0]
+		if readOnly {
+			if len(sa) == 2 {
+				addr = sa[1]
+			} else {
+				rnd.Lock()
+				ix := rnd.Intn(len(sa) - 1)
+				rnd.Unlock()
+				addr = addrs[ix+1]
+			}
+		}
+		addrs = append(addrs, addr)
+	}
+	return addrs, nil
+}
+
+// onRedir triggers the reloading
+func (cp *ClusterPool) onRedir(ri *RedirInfo) bool {
 	doReload := false
 
 	// Reload only the kind is MOVED. ASK redirecting indicates that only the next query need to redirect,
@@ -165,13 +205,10 @@ func (cp *ClusterPool) onRedir(ri *RedirInfo) {
 		}
 	}
 	if doReload {
+		// reload concurrently for future requests, and the trigger routine should try again with the addr in the RedirInfo
 		go cp.reloadSlotMaping()
 	}
-}
-
-// ReloadSlots reloads the slot mapping
-func (cp *ClusterPool) ReloadSlotMapping() error {
-	return cp.reloadSlotMaping()
+	return doReload
 }
 
 func (cp *ClusterPool) getRedisConnByAddr(addr string) (redis.Conn, error) {

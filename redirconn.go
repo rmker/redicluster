@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gomodule/redigo/redis"
 )
@@ -16,8 +17,11 @@ type redirconn struct {
 	// redir decides if the conn should handle redirecting
 	redir bool
 
-	// boundConn is the connection bound with an addr (specified by Send API)
-	boundConn redis.Conn
+	// protect the following members
+	mu sync.Mutex
+
+	// ppl is the pipeLiner (specified by Send API)
+	ppl *pipeLiner
 }
 
 type RedirInfo struct {
@@ -32,22 +36,6 @@ type RedirInfo struct {
 
 	// Raw is the original error string
 	Raw string
-}
-
-// Close closes the connection.
-func (c *redirconn) Close() error {
-	if c.boundConn != nil {
-		return c.boundConn.Close()
-	}
-	return nil
-}
-
-// Err returns a non-nil value when the connection is not usable.
-func (c *redirconn) Err() error {
-	if c.boundConn != nil {
-		return c.boundConn.Err()
-	}
-	return nil
 }
 
 // ParseRedirInfo parses the redirecting error into redirInfo
@@ -70,6 +58,21 @@ func ParseRedirInfo(err error) *RedirInfo {
 		Addr: parts[2],
 		Raw:  re.Error(),
 	}
+}
+
+// Close closes the connection.
+func (c *redirconn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ppl != nil {
+		return c.ppl.Close()
+	}
+	return nil
+}
+
+// Err returns a non-nil value when the connection is not usable.
+func (c *redirconn) Err() error {
+	return nil
 }
 
 // Do sends a command to the server and returns the received reply.
@@ -98,37 +101,34 @@ func (c *redirconn) Do(cmd string, args ...interface{}) (reply interface{}, err 
 	return
 }
 
-// Send writes the command to the client's output buffer.
+// Send writes the command to the pipeLiner
 func (c *redirconn) Send(cmd string, args ...interface{}) error {
-	if c.boundConn == nil {
-		conn, err := c.cp.getRedisConnBySlot(CmdSlot(cmd, args...))
-		if err != nil {
-			return err
-		}
-		if conn == nil {
-			return errors.New("nil conn")
-		}
-		c.boundConn = conn
+	c.mu.Lock()
+	if c.ppl == nil {
+		c.ppl = newPipeliner(c.cp)
 	}
-	return c.boundConn.Send(cmd, args...)
+	c.mu.Unlock()
+	return c.ppl.send(cmd, args...)
 }
 
 // Flush flushes the output buffer to the Redis server.
 func (c *redirconn) Flush() error {
-	if c.boundConn != nil {
-		return c.boundConn.Flush()
+	c.mu.Lock()
+	if c.ppl == nil {
+		c.mu.Unlock()
+		return nil
 	}
-	return nil
+	c.mu.Unlock()
+	return c.ppl.flush()
 }
 
-// Receive receives a single reply from the Redis server
+// Receive receives a single reply from the pipeLiner
 func (c *redirconn) Receive() (reply interface{}, err error) {
-	if c.boundConn != nil {
-		return c.boundConn.Receive()
+	c.mu.Lock()
+	if c.ppl == nil {
+		c.mu.Unlock()
+		return nil, errors.New("no send request before")
 	}
-	return nil, nil
-}
-
-func (c *redirconn) GetBoundConn() redis.Conn {
-	return c.boundConn
+	c.mu.Unlock()
+	return c.ppl.receive()
 }
