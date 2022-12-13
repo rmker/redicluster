@@ -16,7 +16,7 @@ The pool and connection interface defined in Redigo is exposed with drop-in repl
 The slots mapping is stored in the pool object. It would be refreshed automatically once redirecting occurs every time, or updated manually by callers.
 
 ### 3. Redirecting handling
-The Conn can request the right node indicated by the "MOVE" response automatically on the underlayer after redirecting occurs. The callers don't need to handle it on the application layer. Optionally, the callers can close this mechanism and handle redirecting by themselves.
+The Conn can request the right node indicated by the MOVED response automatically on the underlayer after redirecting occurs. The callers don't need to handle it on the application layer. Optionally, the callers can close this mechanism and handle redirecting by themselves.
 
 ### 4. Pipeline
 A pipeline request always contains multiple keys. Unlike standalone Redis, those keys are highly probably located on different nodes in the Redis Cluster. We need to extract the keys and map them to the right nodes, and send multiple sub-requests to those nodes concurrently. Once all sub responses arrived, a final response composed by them in the original order will be returned to the caller. Obviously, the redirecting of every sub -request can be handled automatically, the same as mentioned above.
@@ -39,5 +39,5 @@ A Pub/Sub message is propagated across the cluster to all subscribers. Any node 
 2. RedirConn struct
    A struct that implements redis.Conn interface and can handle redirecting automatically when MOVED or ASK occur.
    
-3. PipelineConn interface
+3. Pipeliner
    A struct that implements redis.Conn interface and can handle redis pipeline commands directly. It scans all commands in the pipeline and then sorts out them into different sub-pipeline commands according to the slots. All sub-pipeline commands will be sent concurrently. If redirecting occurs to some commands, it will request them again to the right nodes indicated by the redirecting response. Once all of these sub-commands are returned, it composites them into a single response to the caller in the original command order.
