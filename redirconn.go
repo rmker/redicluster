@@ -10,22 +10,31 @@ import (
 )
 
 // redirconn is a struct that implements redis.Conn interface, which supports most of commands for redis cluster,
-// including redirection handling automatically, multikeys command(MSET/MGET) and pipeline. Meanwhile, redirconn also works
-// if you are using stand-alone redis.
+// including redirection handling automatically, multikeys command(MSET/MGET) and pipeline. Meanwhile, redirconn
+// also works well if you are using stand-alone redis.
 
 type redirconn struct {
 
 	// cp is the pointer to the ClusterPool, immutable
 	cp *ClusterPool
 
-	// redir decides if the conn should handle redirecting
+	// redir decides if the conn should handle redirecting, immutable
 	redir bool
+
+	// if this is a read only conn
+	readOnly bool
 
 	// protect the following members
 	mu sync.Mutex
 
-	// ppl is the pipeLiner (specified by Send API)
+	// ppl is the pipeLiner (specified by Send() API)
 	ppl *pipeLiner
+
+	// cachedRc is the last redis.Conn used by Do() API
+	lastRc redis.Conn
+
+	// cachedAddr is the last node address used by Do() API
+	lastAddr string
 }
 
 type RedirInfo struct {
@@ -84,6 +93,11 @@ func (c *redirconn) Close() error {
 	if c.ppl != nil {
 		return c.ppl.Close()
 	}
+	if c.lastRc != nil {
+		c.lastRc.Close()
+		c.lastRc = nil
+		c.lastAddr = ""
+	}
 	return nil
 }
 
@@ -95,24 +109,45 @@ func (c *redirconn) Err() error {
 // Do sends a command to the server and returns the received reply.
 // Request will be sent to the node automatically that redirection error indicates if redir is true and redirecting occurs
 func (c *redirconn) Do(cmd string, args ...interface{}) (reply interface{}, err error) {
-	conn, err := c.cp.getRedisConnBySlot(CmdSlot(cmd, args...))
-	// conn, err := c.cp.getRedisConn()
-	if conn == nil {
-		return nil, errors.New("invalid conn")
+	if repl, err, hooked := c.hookCmd(cmd, args...); hooked {
+		return repl, err
 	}
-	if repl, err1, hooked := c.hookCmd(cmd, args...); hooked {
-		return repl, err1
+	addrs, err := c.cp.GetAddrsBySlots([]int{CmdSlot(cmd, args...)}, c.readOnly)
+	if err != nil {
+		return nil, err
 	}
+	if len(addrs) == 0 || len(addrs[0]) == 0 {
+		return nil, errors.New("empty node address")
+	}
+
+	addr := addrs[0]
+	c.mu.Lock()
+	if addr != c.lastAddr || c.lastRc == nil {
+		conn, err := c.cp.getRedisConnByAddr(addr)
+		if conn == nil {
+			return nil, errors.New("invalid conn")
+		}
+		if err != nil {
+			return nil, err
+		}
+		c.lastAddr = addr
+		c.lastRc = conn
+	}
+	conn := c.lastRc
+	c.mu.Unlock()
 	repl, err1 := conn.Do(cmd, args...)
-	conn.Close()
+
 	if err1 != nil {
 		ri := ParseRedirInfo(err1)
 		if ri != nil {
 			c.cp.onRedir(ri)
-			conn, err = c.cp.getRedisConnByAddr(ri.Addr)
-			if conn != nil {
+			conn, err := c.cp.getRedisConnByAddr(ri.Addr)
+			if conn != nil && err == nil {
 				repl, err1 = conn.Do(cmd, args...)
-				conn.Close()
+				c.mu.Lock()
+				c.lastAddr = ri.Addr
+				c.lastRc = conn
+				c.mu.Unlock()
 			}
 		}
 	}

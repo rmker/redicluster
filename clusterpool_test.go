@@ -56,8 +56,9 @@ func WithPool() *ClusterPool {
 
 func TestConnectWithoutPool(t *testing.T) {
 	cp := WithoutPool()
+	cp.ReloadSlotMapping()
 	conn := cp.Get()
-	rep, err := conn.Do("ping")
+	rep, err := conn.Do("PING")
 	require.NoError(t, err)
 	t.Logf("ping:%s", rep)
 }
@@ -71,6 +72,7 @@ func TestReloadSlots(t *testing.T) {
 
 func TestNormalCommand(t *testing.T) {
 	cp := WithPool()
+	cp.ReloadSlotMapping()
 	conn := cp.Get()
 	rep, err := conn.Do("SET", "abc", "123")
 	assert.NoError(t, err)

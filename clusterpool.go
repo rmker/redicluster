@@ -12,6 +12,8 @@ import (
 	"github.com/gomodule/redigo/redis"
 )
 
+// ClusterPool is a redis cluster manager and nodes pool, that handles the slot mapping and the pool of connections to cluster nodes
+
 const (
 	TotalSlots = 16384
 )
@@ -28,17 +30,33 @@ type slotInfo struct {
 }
 
 type ClusterPool struct {
-	EntryAddrs             []string
-	DialOptionsWithoutPool []redis.DialOption
-	DefaultPoolTimeout     time.Duration
-	CreateConnPool         func(ctx context.Context, addr string) (*redis.Pool, error)
+	// The entry addresses for cluster, which can be any node address in cluster
+	EntryAddrs []string
 
-	// private members
-	mu          sync.Mutex
+	// Dial options for case without pool(CreateConnPool is nil)
+	DialOptionsWithoutPool []redis.DialOption
+
+	// Defualt timeout for the connection pool
+	DefaultPoolTimeout time.Duration
+
+	// Function for creating connection pool, which would be invoked when the caller acquires conn by Getxx func
+	// if the node has not pool in connPools. By this func, you can control the pool behavior based on your demand
+	CreateConnPool func(ctx context.Context, addr string) (*redis.Pool, error)
+
+	// protect the following members
+	mu sync.Mutex
+
+	// slot mapping, slot -> addrs, the 0 index address is the master
 	slotAddrMap [TotalSlots][]string
-	slots       []*slotInfo
-	connPools   map[string]*redis.Pool
-	reloading   bool
+
+	// slot info, including slot range and corresponding nodes address and roles
+	slots []*slotInfo
+
+	// connections pool for nodes in cluster
+	connPools map[string]*redis.Pool
+
+	// reloading indicates that the slot mapping is reloading
+	reloading bool
 }
 
 // Slot returns the hash Slot of the key
@@ -66,12 +84,12 @@ func CmdSlot(cmd string, args ...interface{}) int {
 
 // Get gets the redis.Conn interface that handles the redirecting automatically
 func (cp *ClusterPool) Get() redis.Conn {
-	return &redirconn{cp: cp, redir: true}
+	return &redirconn{cp: cp, redir: true, readOnly: false}
 }
 
 // GetContext gets the redis.Conn interface that handles the redirecting automatically
 func (cp *ClusterPool) GetContext(ctx context.Context) redis.Conn {
-	return &redirconn{cp: cp, redir: true}
+	return &redirconn{cp: cp, redir: true, readOnly: false}
 }
 
 // Stats gets the redis.PoolStats of the current cluster
@@ -126,7 +144,13 @@ func (cp *ClusterPool) IdleCount() int {
 // GetConnWithoutRedir gets the redis.Conn interface without redirecting handling, which allows
 // you handling the redirecting
 func (cp *ClusterPool) GetConnWithoutRedir() redis.Conn {
-	return &redirconn{cp: cp, redir: false}
+	return &redirconn{cp: cp, redir: false, readOnly: false}
+}
+
+// GetConnWithoutRedir gets the redis.Conn interface without redirecting handling, which allows
+// you handling the redirecting
+func (cp *ClusterPool) GetReadonlyConn() redis.Conn {
+	return &redirconn{cp: cp, redir: true, readOnly: true}
 }
 
 // VerbosSlots returns the slot mapping of the cluster with a readable string
