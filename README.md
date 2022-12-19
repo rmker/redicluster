@@ -44,5 +44,71 @@ A Pub/Sub message is propagated across the cluster to all subscribers. Any node 
 3. Pipeliner
    A struct that implements redis.Conn interface and can handle redis pipeline commands directly. It scans all commands in the pipeline and then sorts out them into different sub-pipeline commands according to the slots. All sub-pipeline commands will be sent concurrently. If redirecting occurs to some commands, it will request them again to the right nodes indicated by the redirecting response. Once all of these sub-commands are returned, it composites them into a single response to the caller in the original command order.
 
+## How to use
+1. Creating a ClusterPool for your project
+2. Invoking the ClusterPool.Get() to get a redis.Conn for access the cluster
+3. Invoking the Close() of redis.Conn to return it to the ClusterPool if all operations done
+
+A simple example:
+```go
+// create a cluster pool
+func CreateClusterPool() *ClusterPool {
+   createConnPool := func(ctx context.Context, addr string) (*redis.Pool, error) {
+      return &redis.Pool{
+         Dial: func() (redis.Conn, error) {
+            return redis.Dial(
+               "tcp",
+               addr,
+               redis.DialWriteTimeout(time.Second*3),
+               redis.DialConnectTimeout(time.Second*3),
+               redis.DialReadTimeout(time.Second*3))
+         },
+         DialContext: func(ctx context.Context) (redis.Conn, error) {
+            return redis.DialContext(
+               ctx,
+               "tcp",
+               addr,
+               redis.DialWriteTimeout(time.Second*3),
+               redis.DialConnectTimeout(time.Second*3),
+               redis.DialReadTimeout(time.Second*3))
+         },
+         TestOnBorrow: func(c redis.Conn, t time.Time) error {
+            if time.Since(t) > time.Minute {
+               _, err := c.Do("PING")
+               return err
+            }
+            return nil
+         },
+         MaxIdle:     10,
+         MaxActive:   10,
+         IdleTimeout: time.Minute * 10,
+      }, nil
+   }
+   cp := &ClusterPool{
+      EntryAddrs:     []string{"127.0.0.1:6379"},
+      CreateConnPool: createConnPool,
+   }
+
+   // reload slot mapping in advance
+   cp.ReloadSlotMapping()
+   return cp
+}
+
+cp := CreateClusterPool()
+conn := cp.Get()
+defer conn.Close()
+
+rep, err := conn.Do("SET", "abc", "123")
+fmt.Printf("set result:%s", rep)
+
+rep, err = conn.Do("GET", "abc")
+fmt.Printf("get result:%s", rep)
+
+```
+## Reference
+Redis Cluster Spec: https://redis.io/docs/reference/cluster-spec/
+Redigo: https://github.com/gomodule/redigo
+Redisc: https://github.com/mna/redisc
+
 ## LICENSE
 Redicluster is available under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.html).

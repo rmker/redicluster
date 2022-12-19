@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// To run these testing, you should launch a local redis cluster in advance
+
 func WithoutPool() *ClusterPool {
 	return &ClusterPool{
 		EntryAddrs: []string{"127.0.0.1:6379"},
