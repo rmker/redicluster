@@ -1,12 +1,13 @@
 package redicluster
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
 
 // Supports MSET command for redis cluster through pipeLiner
-func multiset(c *redirconn, args ...interface{}) (interface{}, error) {
+func multiset(ctx context.Context, c *redirconn, args ...interface{}) (interface{}, error) {
 	var (
 		orderSlots []int
 		res        interface{}
@@ -40,7 +41,7 @@ func multiset(c *redirconn, args ...interface{}) (interface{}, error) {
 		}
 		orderSlots = append(orderSlots, slot)
 	}
-	err := pipeLiner.flush()
+	err := pipeLiner.flush(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func multiset(c *redirconn, args ...interface{}) (interface{}, error) {
 }
 
 // Supports MGET command for redis cluster through pipeLiner
-func multiget(c *redirconn, args ...interface{}) (interface{}, error) {
+func multiget(ctx context.Context, c *redirconn, args ...interface{}) (interface{}, error) {
 	var (
 		orderSlots []int
 		res        []interface{}
@@ -85,7 +86,7 @@ func multiget(c *redirconn, args ...interface{}) (interface{}, error) {
 		}
 		orderSlots = append(orderSlots, slot)
 	}
-	err := pipeLiner.flush()
+	err := pipeLiner.flush(ctx)
 	if err != nil {
 		return nil, err
 	}

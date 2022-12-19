@@ -1,10 +1,12 @@
 package redicluster
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gomodule/redigo/redis"
 )
@@ -73,16 +75,40 @@ func ParseRedirInfo(err error) *RedirInfo {
 	}
 }
 
-func (c *redirconn) hookCmd(cmd string, args ...interface{}) (reply interface{}, err error, hooked bool) {
+func (c *redirconn) hookCmd(ctx context.Context, cmd string, args ...interface{}) (reply interface{}, err error, hooked bool) {
 	switch cmd {
 	case "MSET":
-		rep, err := multiset(c, args...)
+		rep, err := multiset(ctx, c, args...)
 		return rep, err, true
 	case "MGET":
-		rep, err := multiget(c, args...)
+		rep, err := multiget(ctx, c, args...)
 		return rep, err, true
 	default:
 		return nil, nil, false
+	}
+}
+
+func connDoContext(conn redis.Conn, ctx context.Context, cmd string, args ...interface{}) (interface{}, error) {
+	if conn == nil {
+		return nil, errors.New("invalid conn")
+	}
+	cwt, ok := conn.(redis.ConnWithContext)
+	if ok {
+		return cwt.DoContext(ctx, cmd, args...)
+	} else {
+		return conn.Do(cmd, args...)
+	}
+}
+
+func connReceiveContext(conn redis.Conn, ctx context.Context) (interface{}, error) {
+	if conn == nil {
+		return nil, errors.New("invalid conn")
+	}
+	cwt, ok := conn.(redis.ConnWithContext)
+	if ok {
+		return cwt.ReceiveContext(ctx)
+	} else {
+		return conn.Receive()
 	}
 }
 
@@ -106,10 +132,22 @@ func (c *redirconn) Err() error {
 	return nil
 }
 
-// Do sends a command to the server and returns the received reply.
-// Request will be sent to the node automatically that redirection error indicates if redir is true and redirecting occurs
+// Do sends a command and return the reply with context.Background() by calling DoContext
 func (c *redirconn) Do(cmd string, args ...interface{}) (reply interface{}, err error) {
-	if repl, err, hooked := c.hookCmd(cmd, args...); hooked {
+	return c.DoContext(context.Background(), cmd, args...)
+}
+
+// DoWithTimeout sends a command and return the reply with timeout by calling DoContext
+func (c *redirconn) DoWithTimeout(timeout time.Duration, cmd string, args ...interface{}) (reply interface{}, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return c.DoContext(ctx, cmd, args...)
+}
+
+// DoContext sends a command to the server and returns the received reply.
+// Request will be sent to the node automatically that redirection error indicates if redir is true and redirecting occurs
+func (c *redirconn) DoContext(ctx context.Context, cmd string, args ...interface{}) (reply interface{}, err error) {
+	if repl, err, hooked := c.hookCmd(ctx, cmd, args...); hooked {
 		return repl, err
 	}
 	addrs, err := c.cp.GetAddrsBySlots([]int{CmdSlot(cmd, args...)}, c.readOnly)
@@ -123,7 +161,7 @@ func (c *redirconn) Do(cmd string, args ...interface{}) (reply interface{}, err 
 	addr := addrs[0]
 	c.mu.Lock()
 	if addr != c.lastAddr || c.lastRc == nil {
-		conn, err := c.cp.getRedisConnByAddr(addr)
+		conn, err := c.cp.getRedisConnByAddrContext(ctx, addr)
 		if conn == nil {
 			return nil, errors.New("invalid conn")
 		}
@@ -135,15 +173,16 @@ func (c *redirconn) Do(cmd string, args ...interface{}) (reply interface{}, err 
 	}
 	conn := c.lastRc
 	c.mu.Unlock()
-	repl, err1 := conn.Do(cmd, args...)
+
+	repl, err1 := connDoContext(conn, ctx, cmd, args...)
 
 	if err1 != nil {
 		ri := ParseRedirInfo(err1)
 		if ri != nil {
 			c.cp.onRedir(ri)
-			conn, err := c.cp.getRedisConnByAddr(ri.Addr)
+			conn, err := c.cp.getRedisConnByAddrContext(ctx, ri.Addr)
 			if conn != nil && err == nil {
-				repl, err1 = conn.Do(cmd, args...)
+				repl, err1 = connDoContext(conn, ctx, cmd, args...)
 				c.mu.Lock()
 				c.lastAddr = ri.Addr
 				c.lastRc = conn
@@ -166,7 +205,7 @@ func (c *redirconn) Send(cmd string, args ...interface{}) error {
 	return c.ppl.send(cmd, args...)
 }
 
-// Flush flushes the output buffer to the Redis server.
+// Flush flushes the output buffer to the Redis server
 func (c *redirconn) Flush() error {
 	c.mu.Lock()
 	if c.ppl == nil {
@@ -174,11 +213,36 @@ func (c *redirconn) Flush() error {
 		return nil
 	}
 	c.mu.Unlock()
-	return c.ppl.flush()
+	return c.ppl.flush(context.Background())
 }
 
-// Receive receives a single reply from the pipeLiner
+// Receive receives a single reply from the pipeLiner.
+// Note: this func is a non-block operation since pipeLiner just copy the reply to the caller from received buffer
 func (c *redirconn) Receive() (reply interface{}, err error) {
+	c.mu.Lock()
+	if c.ppl == nil {
+		c.mu.Unlock()
+		return nil, errors.New("no send request before")
+	}
+	c.mu.Unlock()
+	return c.ppl.receive()
+}
+
+// Receive receives a single reply from the pipeLiner with timeout.
+// Note: just for implementing ConnWithTimeout, timeout will be ignored since there is no I/O operation in pipeLiner
+func (c *redirconn) ReceiveWithTimeout(timeout time.Duration) (reply interface{}, err error) {
+	c.mu.Lock()
+	if c.ppl == nil {
+		c.mu.Unlock()
+		return nil, errors.New("no send request before")
+	}
+	c.mu.Unlock()
+	return c.ppl.receive()
+}
+
+// Receive receives a single reply from the pipeLiner with context.
+// Note: just for implementing ConnWithContext, ctx will be ignored since there is no I/O operation in pipeLiner
+func (c *redirconn) ReceiveContext(ctx context.Context) (reply interface{}, err error) {
 	c.mu.Lock()
 	if c.ppl == nil {
 		c.mu.Unlock()

@@ -1,6 +1,7 @@
 package redicluster
 
 import (
+	"context"
 	"errors"
 	"sync"
 
@@ -50,10 +51,10 @@ func newPipeliner(cp *ClusterPool) *pipeLiner {
 }
 
 // Run a batch that do the real redis pipeline request
-func (bt *batch) run(p *pipeLiner) error {
+func (bt *batch) run(ctx context.Context, p *pipeLiner) error {
 	var err error
 	if bt.conn == nil && len(bt.addr) > 0 {
-		bt.conn, err = p.cp.getRedisConnByAddr(bt.addr)
+		bt.conn, err = p.cp.getRedisConnByAddrContext(ctx, bt.addr)
 		if err != nil {
 			return err
 		}
@@ -72,7 +73,7 @@ func (bt *batch) run(p *pipeLiner) error {
 		return err
 	}
 	for _, cmd := range bt.cmds {
-		cmd.reply, cmd.reply_err = bt.conn.Receive()
+		cmd.reply, cmd.reply_err = connReceiveContext(bt.conn, ctx)
 		if cmd.reply_err != nil {
 			if ri := ParseRedirInfo(cmd.reply_err); ri != nil {
 				cmd.ri = ri
@@ -147,15 +148,15 @@ func (p *pipeLiner) buildRedirectBatches() int {
 	return redir_count
 }
 
-func (p *pipeLiner) doRedirect() {
+func (p *pipeLiner) doRedirect(ctx context.Context) {
 	redir_count := p.buildRedirectBatches()
 	if redir_count > 0 {
-		p.runBatches()
+		p.runBatches(ctx)
 	}
 }
 
 // run all the batches in goroutines, and wait them returning
-func (p *pipeLiner) runBatches() {
+func (p *pipeLiner) runBatches(ctx context.Context) {
 	if len(p.batches) <= 0 {
 		return
 	}
@@ -165,7 +166,7 @@ func (p *pipeLiner) runBatches() {
 			wg.Add(1)
 			go func(b *batch) {
 				defer wg.Done()
-				err := b.run(p)
+				err := b.run(ctx, p)
 				if err != nil {
 					return
 				}
@@ -192,7 +193,7 @@ func (p *pipeLiner) Close() error {
 // Build all the batches, and run them concurrently in different goroutines.
 // All replies will be stored in every cmd struct once all requests respond.
 // The redirection will be handled if there is any MOVED error returned.
-func (p *pipeLiner) flush() error {
+func (p *pipeLiner) flush(ctx context.Context) error {
 	var err error
 	if p.flushed || len(p.cmds) == 0 {
 		return nil
@@ -201,8 +202,8 @@ func (p *pipeLiner) flush() error {
 	if err != nil {
 		return err
 	}
-	p.runBatches()
-	p.doRedirect()
+	p.runBatches(ctx)
+	p.doRedirect(ctx)
 	p.flushed = true
 	return nil
 }
