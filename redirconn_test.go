@@ -1,8 +1,10 @@
 package redicluster
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/gomodule/redigo/redis"
 	"github.com/stretchr/testify/assert"
@@ -12,6 +14,7 @@ func TestPipeLineSet(t *testing.T) {
 	cp := WithPool()
 	cp.ReloadSlotMapping()
 	conn := cp.Get()
+	defer conn.Close()
 	n := 6
 
 	// set
@@ -54,6 +57,7 @@ func TestMultiCmd(t *testing.T) {
 	cp := WithPool()
 	cp.ReloadSlotMapping()
 	conn := cp.Get()
+	defer conn.Close()
 	var args []interface{}
 	n := 6
 	for i := 0; i < n; i++ {
@@ -71,4 +75,46 @@ func TestMultiCmd(t *testing.T) {
 	rep, err = conn.Do("MGET", args...)
 	assert.NoError(t, err)
 	t.Logf("get result:%+v", rep)
+}
+
+func TestDoWithTimeout(t *testing.T) {
+	cp := WithPool()
+	cp.ReloadSlotMapping()
+	conn := cp.Get()
+	defer conn.Close()
+	cwt, ok := conn.(redis.ConnWithTimeout)
+	if !ok {
+		t.Fatalf("not ConnWithTimeout interface")
+		return
+	}
+	// must be timedout even though local redis server
+	_, err := cwt.DoWithTimeout(time.Microsecond, "SET", "abc", "123")
+	assert.Error(t, err, "seems timeout parameter didn't work")
+
+	rep, err := cwt.DoWithTimeout(time.Millisecond*100, "SET", "abc", "123")
+	assert.NoError(t, err, "DoWithTimeout error")
+	t.Logf("get result:%s", rep)
+}
+
+func TestDoWithContext(t *testing.T) {
+	cp := WithPool()
+	cp.ReloadSlotMapping()
+	conn := cp.Get()
+	defer conn.Close()
+	cwt, ok := conn.(redis.ConnWithContext)
+	if !ok {
+		t.Fatalf("not ConnWithTimeout interface")
+		return
+	}
+	// must be timedout even though local redis server
+	ctx, cancel := context.WithTimeout(context.Background(), time.Microsecond)
+	defer cancel()
+	_, err := cwt.DoContext(ctx, "SET", "abc", "123")
+	assert.Error(t, err, "seems ctx parameter didn't work")
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Millisecond*100)
+	defer cancel2()
+	rep, err := cwt.DoContext(ctx2, "SET", "abc", "123")
+	assert.NoError(t, err, "DoContext error")
+	t.Logf("get result:%s", rep)
 }

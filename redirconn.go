@@ -163,9 +163,11 @@ func (c *redirconn) DoContext(ctx context.Context, cmd string, args ...interface
 	if addr != c.lastAddr || c.lastRc == nil {
 		conn, err := c.cp.getRedisConnByAddrContext(ctx, addr)
 		if conn == nil {
+			c.mu.Unlock()
 			return nil, errors.New("invalid conn")
 		}
 		if err != nil {
+			c.mu.Unlock()
 			return nil, err
 		}
 		c.lastAddr = addr
