@@ -106,9 +106,9 @@ fmt.Printf("get result:%s", rep)
 
 ```
 ## Reference
-Redis Cluster Spec: https://redis.io/docs/reference/cluster-spec/
-Redigo: https://github.com/gomodule/redigo
-Redisc: https://github.com/mna/redisc
+1. Redis Cluster Spec: https://redis.io/docs/reference/cluster-spec/
+2. Redigo: https://github.com/gomodule/redigo
+3. Redisc: https://github.com/mna/redisc
 
 ## LICENSE
 Redicluster is available under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.html).
