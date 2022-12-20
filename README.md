@@ -35,14 +35,11 @@ Lua script execution is an atomic operation in Redis. You are not able to proces
 A Pub/Sub message is propagated across the cluster to all subscribers. Any node can receive the message, so we don't need to do anything about it. But from Redis 7.0, [sharded Pub/Sub](https://redis.io/docs/manual/pubsub/#sharded-pubsub) channel is introduced to support sharded messages based on the channel key slots. Relevant commands(SSUBSCRIBE, SUNSUBSCRIBE, SPUBLISH, etc.) will be sent to the right node based on the channel key.
 
 ## Hierarchy
-1. ClusterPool struct
-   A struct that manages cluster connection pool. By calling its Getxx API, users can request redis.Conn interface that can be used to access Redis Cluster directly. It also manages underlying Conn corresponding to the nodes in the cluster by a pool list inside.
+1. ClusterPool: the struct that manages cluster connection pool. By calling its Getxx API, users can request redis.Conn interface that can be used to access Redis Cluster directly. It also manages underlying Conn corresponding to the nodes in the cluster by a pool list inside.
 
-2. RedirConn struct
-   A struct that implements redis.Conn interface and can handle redirecting automatically when MOVED or ASK occur.
-   
-3. Pipeliner
-   A struct that implements redis.Conn interface and can handle redis pipeline commands directly. It scans all commands in the pipeline and then sorts out them into different sub-pipeline commands according to the slots. All sub-pipeline commands will be sent concurrently. If redirecting occurs to some commands, it will request them again to the right nodes indicated by the redirecting response. Once all of these sub-commands are returned, it composites them into a single response to the caller in the original command order.
+2. pipeLiner: the struct that implements redis.Conn interface and can handle redis pipeline commands directly. It scans all commands in the pipeline and then sorts out them into different sub-pipeline commands according to the slots. All sub-pipeline commands will be sent concurrently. If redirecting occurs to some commands, it will request them again to the right nodes indicated by the redirecting response. Once all of these sub-commands are returned, it composites them into a single response to the caller in the original command order.
+
+3. redirconn: the struct that implements redis.Conn interface, handles redirecting automatically when MOVED or ASK occur and passes send/receive/flush to a underlying pipeLiner to support pipeline for redis cluster. ClusterPool.Get() returns it's pointer to the caller.
 
 ## How to use
 1. Creating a ClusterPool for your project
@@ -98,11 +95,27 @@ cp := CreateClusterPool()
 conn := cp.Get()
 defer conn.Close()
 
+// Set and GET
 rep, err := conn.Do("SET", "abc", "123")
-fmt.Printf("set result:%s", rep)
+fmt.Printf("SET result:%s, err=%s", rep, err)
 
 rep, err = conn.Do("GET", "abc")
-fmt.Printf("get result:%s", rep)
+fmt.Printf("GET result:%s, err=%s", rep, err)
+
+// MSET
+rep, err := conn.Do("MSET", "abc", "123", "efg", "456")
+fmt.Printf("MSET result:%s, err=%s", rep, err)
+
+// pipeline
+conn.Send("GET", "abc")
+conn.Send("GET", "efg")
+conn.Flush()
+
+rep, err = conn.Receive()
+fmt.Printf("pipeline result1:%s, err=%s", rep, err)
+
+rep, err = conn.Receive()
+fmt.Printf("pipeline result2:%s, err=%s", rep, err)
 
 ```
 ## Reference
