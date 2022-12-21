@@ -15,6 +15,12 @@ import (
 // including redirection handling automatically, multikeys command(MSET/MGET) and pipeline. Meanwhile, redirconn
 // also works well if you are using stand-alone redis.
 
+const (
+	OpNil      = 0
+	OpDO       = 1
+	OpPipeLine = 2
+)
+
 type redirconn struct {
 
 	// cp is the pointer to the ClusterPool, immutable
@@ -23,7 +29,7 @@ type redirconn struct {
 	// redir decides if the conn should handle redirecting, immutable
 	redir bool
 
-	// if this is a read only conn
+	// if this is a read only conn, immutable
 	readOnly bool
 
 	// protect the following members
@@ -32,11 +38,14 @@ type redirconn struct {
 	// ppl is the pipeLiner (specified by Send() API)
 	ppl *pipeLiner
 
-	// cachedRc is the last redis.Conn used by Do() API
+	// lastRc is the last redis.Conn used by Do() API
 	lastRc redis.Conn
 
-	// cachedAddr is the last node address used by Do() API
+	// lastAddr is the last node address used by Do() API
 	lastAddr string
+
+	// last operation
+	lastOp int
 }
 
 type RedirInfo struct {
@@ -75,7 +84,7 @@ func ParseRedirInfo(err error) *RedirInfo {
 	}
 }
 
-func (c *redirconn) hookCmd(ctx context.Context, cmd string, args ...interface{}) (reply interface{}, err error, hooked bool) {
+func (c *redirconn) hookDo(ctx context.Context, cmd string, args ...interface{}) (reply interface{}, err error, hooked bool) {
 	switch cmd {
 	case "MSET":
 		rep, err := multiset(ctx, c, args...)
@@ -100,7 +109,7 @@ func connDoContext(conn redis.Conn, ctx context.Context, cmd string, args ...int
 	}
 }
 
-func connReceiveContext(conn redis.Conn, ctx context.Context) (interface{}, error) {
+func connReceiveWithContext(conn redis.Conn, ctx context.Context) (interface{}, error) {
 	if conn == nil {
 		return nil, errors.New("invalid conn")
 	}
@@ -112,12 +121,24 @@ func connReceiveContext(conn redis.Conn, ctx context.Context) (interface{}, erro
 	}
 }
 
+func connReceiveWithTimeout(conn redis.Conn, timeout time.Duration) (interface{}, error) {
+	if conn == nil {
+		return nil, errors.New("invalid conn")
+	}
+	cwt, ok := conn.(redis.ConnWithTimeout)
+	if ok {
+		return cwt.ReceiveWithTimeout(timeout)
+	} else {
+		return conn.Receive()
+	}
+}
+
 // Close closes the connection.
 func (c *redirconn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.ppl != nil {
-		return c.ppl.Close()
+		return c.ppl.close()
 	}
 	if c.lastRc != nil {
 		c.lastRc.Close()
@@ -129,6 +150,13 @@ func (c *redirconn) Close() error {
 
 // Err returns a non-nil value when the connection is not usable.
 func (c *redirconn) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastOp == OpDO && c.lastRc != nil {
+		return c.lastRc.Err()
+	} else if c.lastOp == OpPipeLine && c.ppl != nil {
+		return c.ppl.err()
+	}
 	return nil
 }
 
@@ -144,22 +172,29 @@ func (c *redirconn) DoWithTimeout(timeout time.Duration, cmd string, args ...int
 	return c.DoContext(ctx, cmd, args...)
 }
 
-// DoContext sends a command to the server and returns the received reply.
-// Request will be sent to the node automatically that redirection error indicates if redir is true and redirecting occurs
-func (c *redirconn) DoContext(ctx context.Context, cmd string, args ...interface{}) (reply interface{}, err error) {
-	if repl, err, hooked := c.hookCmd(ctx, cmd, args...); hooked {
-		return repl, err
-	}
-	addrs, err := c.cp.GetAddrsBySlots([]int{CmdSlot(cmd, args...)}, c.readOnly)
-	if err != nil {
-		return nil, err
-	}
-	if len(addrs) == 0 || len(addrs[0]) == 0 {
-		return nil, errors.New("empty node address")
+func (c *redirconn) getConn(ctx context.Context, lastOp int, cmd string, args ...interface{}) (redis.Conn, error) {
+	var addr string
+	slot := CmdSlot(cmd, args...)
+	if slot < 0 {
+		c.mu.Lock()
+		// if slot=-1, then use the last addr and conn to request
+		addr = c.lastAddr
+		c.mu.Unlock()
 	}
 
-	addr := addrs[0]
+	if len(addr) == 0 {
+		addrs, err := c.cp.GetAddrsBySlots([]int{slot}, c.readOnly)
+		if err != nil {
+			return nil, err
+		}
+		if len(addrs) == 0 || len(addrs[0]) == 0 {
+			return nil, errors.New("empty node address")
+		}
+		addr = addrs[0]
+	}
+
 	c.mu.Lock()
+	c.lastOp = lastOp
 	if addr != c.lastAddr || c.lastRc == nil {
 		conn, err := c.cp.getRedisConnByAddrContext(ctx, addr)
 		if conn == nil {
@@ -171,13 +206,27 @@ func (c *redirconn) DoContext(ctx context.Context, cmd string, args ...interface
 			return nil, err
 		}
 		c.lastAddr = addr
+		if c.lastRc != nil {
+			c.lastRc.Close()
+		}
 		c.lastRc = conn
 	}
 	conn := c.lastRc
 	c.mu.Unlock()
+	return conn, nil
+}
 
+// DoContext sends a command to the server and returns the received reply.
+// Request will be sent to the node automatically that redirection error indicates if redir is true and redirecting occurs
+func (c *redirconn) DoContext(ctx context.Context, cmd string, args ...interface{}) (reply interface{}, err error) {
+	if repl, err, hooked := c.hookDo(ctx, cmd, args...); hooked {
+		return repl, err
+	}
+	conn, err := c.getConn(ctx, OpDO, cmd, args...)
+	if err != nil {
+		return nil, err
+	}
 	repl, err1 := connDoContext(conn, ctx, cmd, args...)
-
 	if err1 != nil {
 		ri := ParseRedirInfo(err1)
 		if ri != nil {
@@ -203,6 +252,7 @@ func (c *redirconn) Send(cmd string, args ...interface{}) error {
 	if c.ppl == nil {
 		c.ppl = newPipeliner(c.cp)
 	}
+	c.lastOp = OpPipeLine
 	c.mu.Unlock()
 	return c.ppl.send(cmd, args...)
 }
@@ -214,6 +264,7 @@ func (c *redirconn) Flush() error {
 		c.mu.Unlock()
 		return nil
 	}
+	c.lastOp = OpPipeLine
 	c.mu.Unlock()
 	return c.ppl.flush(context.Background())
 }
@@ -226,6 +277,7 @@ func (c *redirconn) Receive() (reply interface{}, err error) {
 		c.mu.Unlock()
 		return nil, errors.New("no send request before")
 	}
+	c.lastOp = OpPipeLine
 	c.mu.Unlock()
 	return c.ppl.receive()
 }
@@ -238,6 +290,7 @@ func (c *redirconn) ReceiveWithTimeout(timeout time.Duration) (reply interface{}
 		c.mu.Unlock()
 		return nil, errors.New("no send request before")
 	}
+	c.lastOp = OpPipeLine
 	c.mu.Unlock()
 	return c.ppl.receive()
 }
@@ -250,6 +303,7 @@ func (c *redirconn) ReceiveContext(ctx context.Context) (reply interface{}, err 
 		c.mu.Unlock()
 		return nil, errors.New("no send request before")
 	}
+	c.lastOp = OpPipeLine
 	c.mu.Unlock()
 	return c.ppl.receive()
 }

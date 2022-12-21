@@ -33,7 +33,7 @@ func multiset(ctx context.Context, c *redirconn, args ...interface{}) (interface
 	}
 
 	pipeLiner := newPipeliner(c.cp)
-	defer pipeLiner.Close()
+	defer pipeLiner.close()
 	for slot := range cmdMap {
 		err := pipeLiner.send("MSET", cmdMap[slot]...)
 		if err != nil {
@@ -78,7 +78,7 @@ func multiget(ctx context.Context, c *redirconn, args ...interface{}) (interface
 		}
 	}
 	pipeLiner := newPipeliner(c.cp)
-	defer pipeLiner.Close()
+	defer pipeLiner.close()
 	for slot := range cmdMap {
 		err := pipeLiner.send("MGET", cmdMap[slot]...)
 		if err != nil {

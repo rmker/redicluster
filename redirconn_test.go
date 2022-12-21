@@ -10,9 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestPipeLineSet(t *testing.T) {
-	cp := WithPool()
-	cp.ReloadSlotMapping()
+func TestPipeLine1(t *testing.T) {
+	cp := WithPool(t)
 	conn := cp.Get()
 	defer conn.Close()
 	n := 6
@@ -54,8 +53,7 @@ func TestPipeLineSet(t *testing.T) {
 }
 
 func TestMultiCmd(t *testing.T) {
-	cp := WithPool()
-	cp.ReloadSlotMapping()
+	cp := WithPool(t)
 	conn := cp.Get()
 	defer conn.Close()
 	var args []interface{}
@@ -78,8 +76,7 @@ func TestMultiCmd(t *testing.T) {
 }
 
 func TestDoWithTimeout(t *testing.T) {
-	cp := WithPool()
-	cp.ReloadSlotMapping()
+	cp := WithPool(t)
 	conn := cp.Get()
 	defer conn.Close()
 	cwt, ok := conn.(redis.ConnWithTimeout)
@@ -97,8 +94,7 @@ func TestDoWithTimeout(t *testing.T) {
 }
 
 func TestDoWithContext(t *testing.T) {
-	cp := WithPool()
-	cp.ReloadSlotMapping()
+	cp := WithPool(t)
 	conn := cp.Get()
 	defer conn.Close()
 	cwt, ok := conn.(redis.ConnWithContext)

@@ -3,6 +3,7 @@ package redicluster
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 
 	"github.com/gomodule/redigo/redis"
@@ -30,6 +31,7 @@ type batch struct {
 	addr string
 	conn redis.Conn
 	cmds []*cmd
+	err  error
 }
 
 // pipeLiner is a struct that implements redis.Conn interface. It is used to handle pipeline command in a redis cluster
@@ -50,12 +52,19 @@ func newPipeliner(cp *ClusterPool) *pipeLiner {
 	}
 }
 
+func (bt *batch) onError(err error) {
+	if bt.err == nil {
+		bt.err = err
+	}
+}
+
 // Run a batch that do the real redis pipeline request
 func (bt *batch) run(ctx context.Context, p *pipeLiner) error {
 	var err error
 	if bt.conn == nil && len(bt.addr) > 0 {
 		bt.conn, err = p.cp.getRedisConnByAddrContext(ctx, bt.addr)
 		if err != nil {
+			bt.onError(err)
 			return err
 		}
 	}
@@ -65,15 +74,17 @@ func (bt *batch) run(ctx context.Context, p *pipeLiner) error {
 	for _, cmd := range bt.cmds {
 		err = bt.conn.Send(cmd.commandName, cmd.args...)
 		if err != nil {
+			bt.onError(err)
 			return err
 		}
 	}
 	err = bt.conn.Flush()
 	if err != nil {
+		bt.onError(err)
 		return err
 	}
 	for _, cmd := range bt.cmds {
-		cmd.reply, cmd.reply_err = connReceiveContext(bt.conn, ctx)
+		cmd.reply, cmd.reply_err = connReceiveWithContext(bt.conn, ctx)
 		if cmd.reply_err != nil {
 			if ri := ParseRedirInfo(cmd.reply_err); ri != nil {
 				cmd.ri = ri
@@ -185,7 +196,7 @@ func (p *pipeLiner) send(commandName string, args ...interface{}) error {
 	return nil
 }
 
-func (p *pipeLiner) Close() error {
+func (p *pipeLiner) close() error {
 	p.reset()
 	return nil
 }
@@ -243,4 +254,14 @@ func (p *pipeLiner) reset() {
 		}
 		delete(p.batches, k)
 	}
+}
+
+func (p *pipeLiner) err() error {
+	var e []string
+	for _, bt := range p.batches {
+		if bt.err != nil {
+			e = append(e, bt.err.Error())
+		}
+	}
+	return errors.New(strings.Join(e, ","))
 }

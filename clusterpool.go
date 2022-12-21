@@ -72,12 +72,21 @@ func Slot(key string) int {
 
 // CmdSlot returns the hash slot of the command
 func CmdSlot(cmd string, args ...interface{}) int {
-	if len(args) > 0 {
-		if key, ok := args[0].(string); ok {
-			return Slot(key)
-		}
+	// -1 when args is nil, a random slot should be taken for invoker like GetAddrsBySlots
+	slot := -1
+	sk := 0
+
+	// for script command, use the first key to calculate slot, so we can do a script with only one key handling
+	// NOTE: you should not handle muliple keys in one script command in a redis cluster
+	switch cmd {
+	case "EVAL", "EVAL_RO", "EVALSHA", "EVALSHA_RO":
+		sk = 2
 	}
-	return 0
+	if len(args) > sk {
+		key := fmt.Sprintf("%s", args[sk])
+		slot = Slot(key)
+	}
+	return slot
 }
 
 /* redis.Pool compatible APIs */
@@ -141,9 +150,13 @@ func (cp *ClusterPool) IdleCount() int {
 
 /* redis.Pool compatible APIs end */
 
-// GetConnWithoutRedir gets the redis.Conn interface without redirecting handling, which allows
+func (cp *ClusterPool) GetRandomRealConn() (redis.Conn, error) {
+	return cp.getRedisConnBySlot(-1)
+}
+
+// GetNoRedirConn gets the redis.Conn interface without redirecting handling, which allows
 // you handling the redirecting
-func (cp *ClusterPool) GetConnWithoutRedir() redis.Conn {
+func (cp *ClusterPool) GetNoRedirConn() redis.Conn {
 	return &redirconn{cp: cp, redir: false, readOnly: false}
 }
 
@@ -151,6 +164,17 @@ func (cp *ClusterPool) GetConnWithoutRedir() redis.Conn {
 // you handling the redirecting
 func (cp *ClusterPool) GetReadonlyConn() redis.Conn {
 	return &redirconn{cp: cp, redir: true, readOnly: true}
+}
+
+// GetPubSubConn gets the redis.PubSubConn
+func (cp *ClusterPool) GetPubSubConn() (*redis.PubSubConn, error) {
+	conn, err := cp.GetRandomRealConn()
+	if err != nil {
+		return nil, err
+	}
+	return &redis.PubSubConn{
+		Conn: conn,
+	}, nil
 }
 
 // VerbosSlots returns the slot mapping of the cluster with a readable string
@@ -187,6 +211,10 @@ func (cp *ClusterPool) GetAddrsBySlots(slots []int, readOnly bool) ([]string, er
 	for _, sl := range slots {
 		if sl >= TotalSlots {
 			return nil, errors.New("invalid slot")
+		} else if sl < 0 {
+			rnd.Lock()
+			sl = rnd.Intn(TotalSlots)
+			rnd.Unlock()
 		}
 		sa := cp.slotAddrMap[sl]
 		if len(sa) == 0 {
@@ -277,6 +305,11 @@ func (cp *ClusterPool) getRedisConnByAddrContext(ctx context.Context, addr strin
 func (cp *ClusterPool) getRedisConnBySlot(slot int) (redis.Conn, error) {
 	if slot >= TotalSlots {
 		return nil, errors.New("invalid slot")
+	}
+	if slot < 0 {
+		rnd.Lock()
+		slot = rnd.Intn(TotalSlots)
+		rnd.Unlock()
 	}
 	cp.mu.Lock()
 	if len(cp.slotAddrMap[slot]) > 0 {
