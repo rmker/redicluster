@@ -177,6 +177,13 @@ func (cp *ClusterPool) GetPubSubConn() (*redis.PubSubConn, error) {
 	}, nil
 }
 
+// GetShardedPubSubConn gets the ShardedPubSubConn
+func (cp *ClusterPool) GetShardedPubSubConn() (*ShardedPubSubConn, error) {
+	return &ShardedPubSubConn{
+		cp: cp,
+	}, nil
+}
+
 // VerbosSlots returns the slot mapping of the cluster with a readable string
 func (cp *ClusterPool) VerbosSlotMapping() string {
 	var s []string

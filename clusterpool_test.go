@@ -2,7 +2,6 @@ package redicluster
 
 import (
 	"context"
-	"reflect"
 	"testing"
 	"time"
 
@@ -90,39 +89,4 @@ func TestNormalCommand(t *testing.T) {
 	t.Logf("get result:%s", rep)
 
 	t.Logf("active: %d, idle: %d", cp.ActiveCount(), cp.IdleCount())
-}
-
-func expectPushed(t *testing.T, c *redis.PubSubConn, message string, expected interface{}) {
-	actual := c.Receive()
-	t.Logf("expectPushed actual= %v", actual)
-	if !reflect.DeepEqual(actual, expected) {
-		t.Errorf("%s = %v, want %v", message, actual, expected)
-	}
-}
-
-func TestPubSub(t *testing.T) {
-	cp := WithPool(t)
-	p := cp.Get()
-	defer p.Close()
-
-	s1, err := cp.GetPubSubConn()
-	defer s1.Close()
-	assert.NoError(t, err, "GetPubSubConn for subscriber 1 failed")
-
-	s2, err := cp.GetPubSubConn()
-	defer s2.Close()
-	assert.NoError(t, err, "GetPubSubConn for subscriber 2 failed")
-
-	s1.Subscribe("ChnA")
-	expectPushed(t, s1, "s1.Subscribe", redis.Subscription{Kind: "subscribe", Channel: "ChnA", Count: 1})
-
-	s2.Subscribe("ChnA")
-	expectPushed(t, s2, "s2.Subscribe", redis.Subscription{Kind: "subscribe", Channel: "ChnA", Count: 1})
-
-	content := "I'm msg"
-
-	p.Do("PUBLISH", "ChnA", content)
-
-	expectPushed(t, s1, "s1.Subscribe", redis.Message{Channel: "ChnA", Data: []byte(content)})
-	expectPushed(t, s2, "s2.Subscribe", redis.Message{Channel: "ChnA", Data: []byte(content)})
 }
