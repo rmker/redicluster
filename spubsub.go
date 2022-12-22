@@ -14,6 +14,7 @@ type ShardedPubSubConn struct {
 	conn redis.Conn
 }
 
+// ChnSlot returns the channels slot if all channels in the same lost, otherwise returns -1 slot and error
 func ChnSlot(channel ...interface{}) (int, error) {
 	slot := -1
 	for _, cc := range channel {
@@ -75,7 +76,6 @@ func (c *ShardedPubSubConn) SUnsubscribe(channel ...interface{}) error {
 }
 
 // Ping sends a PING to the server with the specified data.
-//
 // The connection must be subscribed to at least one channel or pattern when
 // calling this method.
 func (c *ShardedPubSubConn) Ping(data string) error {
@@ -89,8 +89,6 @@ func (c *ShardedPubSubConn) Ping(data string) error {
 }
 
 // Receive returns a pushed message as a Subscription, Message, Pong or error.
-// The return value is intended to be used directly in a type switch as
-// illustrated in the PubSubConn example.
 func (c *ShardedPubSubConn) Receive() interface{} {
 	if c.conn == nil {
 		return errors.New("nil conn")

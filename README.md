@@ -91,6 +91,18 @@ func CreateClusterPool() *ClusterPool {
    return cp
 }
 
+func printPubSubReceive(prefix string, r interface{}) {
+	if v, ok := r.(redis.Subscription); ok {
+		fmt.Printf("%s redis.Subscription: %v\n", prefix, v)
+	} else if v, ok := r.(redis.Message); ok {
+		fmt.Printf("%s redis.Message: %v\n", prefix, v)
+	} else if v, ok := r.(redis.Pong); ok {
+		fmt.Printf("%s redis.Pong: %v\n", prefix, v)
+   } else {
+      fmt.Printf("%s unknown value: %v\n", prefix, v)
+   }
+}
+
 cp := CreateClusterPool()
 conn := cp.Get()
 defer conn.Close()
@@ -117,6 +129,33 @@ fmt.Printf("pipeline result1:%s, err=%s", rep, err)
 rep, err = conn.Receive()
 fmt.Printf("pipeline result2:%s, err=%s", rep, err)
 
+// PubSub
+s1, err := cp.GetPubSubConn()
+s1.Subscribe("ChnA")
+printPubSubReceive("s1.Subscribe", s1.Receive())
+
+s2, err := cp.GetPubSubConn()
+s2.Subscribe("ChnA")
+printPubSubReceive("s2.Subscribe", s2.Receive())
+
+conn.Do("SPUBLISH", "ChnA", "I'm msg")
+
+printPubSubReceive("push to s1", s1.Receive())
+printPubSubReceive("push to s2", s2.Receive())
+
+// ShardedPubSub
+ss1, err := cp.GetShardedPubSubConn()
+ss1.SSubscribe("ShardedChnA")
+printPubSubReceive("ss1.Subscribe", ss1.Receive())
+
+ss2, err := cp.GetShardedPubSubConn()
+ss2.SSubscribe("ShardedChnA")
+printPubSubReceive("ss2.Subscribe", ss2.Receive())
+
+conn.Do("SPUBLISH", "ShardedChnA", "I'm sharded msg")
+
+printPubSubReceive("push to ss1", ss1.Receive())
+printPubSubReceive("push to ss2", ss2.Receive())
 ```
 ## Reference
 1. Redis Cluster Spec: https://redis.io/docs/reference/cluster-spec/
